@@ -1,0 +1,993 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <script>
+      // Check if we're running under Live Server
+      if (window.location.hostname === '127.0.0.1' || window.location.hostname === 'localhost') {
+          let lastModified = '';
+
+          // Check for file changes every second
+          setInterval(async () => {
+              try {
+                  const response = await fetch(window.location.href, { method: 'HEAD' });
+                  // get a timestamp that shows when the file was last changed
+                  const currentModified = response.headers.get('last-modified');
+
+                  if (lastModified && lastModified !== currentModified) {
+                      window.location.reload();
+                  }
+
+                  lastModified = currentModified;
+              } catch (e) {
+                  console.error('Error checking for updates:', e);
+              }
+          }, 1000);
+      }
+  </script>
+    <script
+      id="p5scripttag"
+      src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.0/p5.min.js"
+      integrity="sha512-uaz5GpnQoE6t5echKlX8P52czvsIGgLPcvlzfvRubLZ1Hp8JemUDnbUiAahbVtPb+jUVrNETuXvAhDDF/N3M4w=="
+      crossorigin="anonymous"
+      referrerpolicy="no-referrer"
+    ></script>
+
+    <link
+      rel="stylesheet"
+      href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/atom-one-dark.min.css"
+    />
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/python.min.js"></script>
+
+    <script>
+      const bgCol = "#FFFFFF";
+const accentCol = "#1a439e";
+
+hljs.initHighlightingOnLoad();
+
+// Function to update background color globally
+function updateBackgroundColor(color) {
+  // Update the JS variable
+  window.bgColCurrent = color;
+
+  // Update body background
+  document.body.style.backgroundColor = color;
+
+  // Update canvas container background
+  const canvasContainer = document.getElementById('canvas-container');
+  if (canvasContainer) {
+    canvasContainer.style.backgroundColor = color;
+  }
+}
+
+// Store tree data for each stage
+const stageData = {
+  Stage_1: null,
+  Stage_2: null,
+  Stage_3: null,
+  Stage_4: null
+};
+
+// Keep track of current selected stage
+let currentStage = null;
+let currentSketch = null;
+let availableStages = [];
+
+// Class definitions for nodes and edges
+class Node {
+  constructor(x, y, id, isRoot = false) {
+    this.x = x;
+    this.y = y;
+    this.id = id;
+    this.visible = isRoot; // Only root nodes are visible initially
+    this.appearProgress = 0;
+    this.popEffect = 0;
+    this.selected = false;
+    this.isRootNode = isRoot;
+  }
+
+  update() {
+    if (this.visible) {
+      // Handle the main appearance animation
+      if (this.appearProgress < 1) {
+        this.appearProgress += 0.06;
+
+        // When we reach full size, trigger the pop effect
+        if (this.appearProgress >= 1) {
+          this.appearProgress = 1; // Cap at 1
+          this.popEffect = 1; // Start the pop effect
+        }
+      }
+
+      // Handle the pop effect animation
+      if (this.popEffect > 0) {
+        this.popEffect -= 0.15; // Control how quickly it shrinks back
+        if (this.popEffect < 0) this.popEffect = 0; // Don't go negative
+      }
+    }
+  }
+
+  startAnimation() {
+    this.visible = true;
+  }
+
+  color() {
+    if (this.selected) {
+      return accentCol; // Use the global accent color variable for selected node
+    }
+    return '#4263eb'; // Default blue color
+  }
+
+  render(p5) {
+    if (this.visible) {
+      const popBonus = this.popEffect * 0.1;
+      const nodeScale = p5.map(this.appearProgress, 0, 1, 0, 1) + popBonus;
+      const alpha = p5.map(this.appearProgress, 0, 1, 0, 255);
+
+      p5.push();
+      p5.translate(this.x, this.y);
+
+      // Shadow effect
+      p5.noStroke();
+      p5.rectMode(p5.CENTER);
+
+      for (let i = 1; i <= 4; i++) {
+        p5.fill(0, 0, 0, alpha * 0.06);
+        p5.rect(i, i, 30 * nodeScale, 30 * nodeScale, 10);
+      }
+
+      // Main square - use node's color with alpha
+      let nodeColor = p5.color(this.color());
+      nodeColor.setAlpha(alpha);
+      p5.fill(nodeColor);
+      p5.rect(0, 0, 30 * nodeScale, 30 * nodeScale, 10);
+
+      // Draw checkmark icon if the node is selected
+      if (this.selected && this.appearProgress >= 1) {
+        p5.stroke(255);
+        p5.strokeWeight(2 * nodeScale);
+        p5.noFill();
+        // Draw checkmark
+        p5.beginShape();
+        p5.vertex(-8, 0);
+        p5.vertex(-3, 5);
+        p5.vertex(8, -6);
+        p5.endShape();
+      }
+
+      p5.pop();
+    }
+  }
+
+  isMouseOver(p5) {
+    return this.visible &&
+           p5.mouseX > this.x - 15 &&
+           p5.mouseX < this.x + 15 &&
+           p5.mouseY > this.y - 15 &&
+           p5.mouseY < this.y + 15;
+  }
+
+  // Connect this node to a child node
+  child(childNode) {
+    // Create an edge from this node to the child
+    let isLeft = childNode.x < this.x;
+    let isRight = childNode.x > this.x;
+    let edge = new Edge(this, childNode, isLeft, isRight);
+    return edge;
+  }
+}
+
+class Edge {
+  constructor(parent, child, isLeft, isRight) {
+    this.parent = parent;
+    this.child = child;
+    this.isLeft = isLeft;
+    this.isRight = isRight;
+    this.progress = 0;
+
+    // Calculate the midpoint where branching occurs
+    this.midY = parent.y + (child.y - parent.y) * 0.6;
+
+    // Use the actual child x-coordinate
+    // This ensures the edge will connect directly to the child node
+    this.branchX = child.x;
+  }
+
+  update() {
+    if (this.parent.visible && this.progress < 1) {
+      this.progress += 0.01; // Adjust animation speed
+    }
+    if (this.progress >= 1) {
+      this.child.visible = true;
+    }
+  }
+
+  color() {
+    return this.child.color();
+  }
+
+  render(p5) {
+    if (!this.parent.visible) return;
+
+    // Calculate path lengths
+    const verticalDist1 = this.midY - this.parent.y;
+    const horizontalDist = Math.abs(this.branchX - this.parent.x);
+    const verticalDist2 = this.child.y - this.midY;
+    const totalLength = verticalDist1 + horizontalDist + verticalDist2;
+
+    // Calculate how much of each segment to draw
+    const currentLength = totalLength * this.progress;
+
+    p5.stroke(180, 190, 205);
+    p5.strokeWeight(1.5);
+    p5.noFill();
+
+    // Always draw the first vertical segment from parent
+    if (currentLength > 0) {
+      const firstSegmentLength = Math.min(currentLength, verticalDist1);
+      const currentMidY = p5.lerp(this.parent.y, this.midY, firstSegmentLength / verticalDist1);
+      p5.line(this.parent.x, this.parent.y, this.parent.x, currentMidY);
+    }
+
+    if (currentLength > verticalDist1) {
+      // Draw second segment (horizontal)
+      const secondSegmentLength = Math.min(currentLength - verticalDist1, horizontalDist);
+      const currentBranchX = p5.lerp(this.parent.x, this.branchX, secondSegmentLength / horizontalDist);
+      p5.line(this.parent.x, this.midY, currentBranchX, this.midY);
+
+      if (currentLength > verticalDist1 + horizontalDist) {
+        // Draw third segment (vertical to child)
+        const thirdSegmentLength = currentLength - verticalDist1 - horizontalDist;
+        const currentChildY = p5.lerp(this.midY, this.child.y, thirdSegmentLength / verticalDist2);
+        p5.line(this.branchX, this.midY, this.branchX, currentChildY);
+      }
+    }
+  }
+}
+
+// Create a modified sketch for each stage
+function createTreeSketch(stageId) {
+  return function(p5) {
+    let nodes = [];
+    let edges = [];
+    let treeData = stageData[stageId];
+
+    p5.setup = function() {
+      const canvas = p5.createCanvas(p5.windowWidth * 0.4, p5.windowHeight);
+      canvas.parent('canvas-container');
+      p5.smooth();
+      p5.frameRate(60);
+
+      if (treeData) {
+        createTreeFromData(treeData);
+      }
+    };
+
+    p5.windowResized = function() {
+      p5.resizeCanvas(p5.windowWidth * 0.4, p5.windowHeight);
+    };
+
+    function createTreeFromData(data) {
+      // Clear existing nodes and edges
+      nodes = [];
+      edges = [];
+
+      // Add defensive checks to prevent errors
+      if (!data || !data.layout || !Array.isArray(data.layout) || !data.edges || !Array.isArray(data.edges)) {
+        console.error("Invalid tree data format:", data);
+        return; // Exit if data structure is invalid
+      }
+
+      // Find all parent nodes in edges
+      const parentNodes = new Set();
+      for (const [parentId, childId] of data.edges) {
+        parentNodes.add(parentId);
+      }
+
+      // Create nodes
+      for (let i = 0; i < data.layout.length; i++) {
+        const [nx, ny] = data.layout[i];
+        // A node is a root if it's a parent and not a child in any edge
+        const isRoot = parentNodes.has(i) && data.edges.every(edge => edge[1] !== i);
+
+        const node = new Node(
+          nx * p5.width * 0.8 + p5.width * 0.1,
+          ny * p5.height * 0.8 + p5.height * 0.1,
+          i,
+          isRoot
+        );
+        nodes.push(node);
+      }
+
+      // If no root was found, make the first parent node visible
+      if (!nodes.some(node => node.visible) && parentNodes.size > 0) {
+        // Get the first parent node
+        const firstParentId = [...parentNodes][0];
+        if (nodes[firstParentId]) {
+          nodes[firstParentId].visible = true;
+        }
+      }
+
+      // Create edges
+      for (const [parentId, childId] of data.edges) {
+        const parent = nodes[parentId];
+        const child = nodes[childId];
+        if (parent && child) { // Verify both nodes exist
+          const isLeft = child.x < parent.x;
+          const isRight = child.x > parent.x;
+          edges.push(new Edge(parent, child, isLeft, isRight));
+        }
+      }
+
+      // Select the first node by default
+      if (nodes.length > 0) {
+        nodes[0].selected = true;
+        updateNodeInfo(0);
+      }
+    }
+
+    p5.draw = function() {
+      // Use the global background color if available, otherwise use the default bgCol
+      const currentBgColor = window.bgColCurrent || bgCol;
+      p5.background(currentBgColor);
+
+      // Update and render edges
+      for (const edge of edges) {
+        edge.update();
+        edge.render(p5);
+      }
+
+      // Update and render nodes
+      for (const node of nodes) {
+        node.update();
+        node.render(p5);
+      }
+
+      // Handle mouse hover
+      p5.cursor(p5.ARROW);
+      for (const node of nodes) {
+        if (node.isMouseOver(p5)) {
+          p5.cursor(p5.HAND);
+        }
+      }
+    };
+
+    p5.mousePressed = function() {
+      // Check if any node was clicked
+      for (let i = 0; i < nodes.length; i++) {
+        if (nodes[i].visible && nodes[i].isMouseOver(p5)) {
+          // Deselect all nodes
+          nodes.forEach(n => n.selected = false);
+          // Select the clicked node
+          nodes[i].selected = true;
+          // Update the right panel with node info
+          updateNodeInfo(i);
+          break;
+        }
+      }
+    };
+
+    function updateNodeInfo(nodeIndex) {
+      if (treeData) {
+        setNodeInfo(
+          treeData.code[nodeIndex],
+          treeData.plan[nodeIndex],
+          treeData.plot_code?.[nodeIndex],
+          treeData.plot_plan?.[nodeIndex],
+          treeData.metrics?.[nodeIndex],
+          treeData.exc_type?.[nodeIndex] || '',
+          treeData.exc_info?.[nodeIndex]?.args?.[0] || '',
+          treeData.exc_stack?.[nodeIndex] || [],
+          treeData.plots?.[nodeIndex] || [],
+          treeData.plot_analyses?.[nodeIndex] || [],
+          treeData.vlm_feedback_summary?.[nodeIndex] || '',
+          treeData.datasets_successfully_tested?.[nodeIndex] || [],
+          treeData.exec_time_feedback?.[nodeIndex] || '',
+          treeData.exec_time?.[nodeIndex] || ''
+        );
+      }
+    }
+  };
+}
+
+// Start a new p5 sketch for the given stage
+function startSketch(stageId) {
+  if (currentSketch) {
+    currentSketch.remove();
+  }
+
+  if (stageData[stageId]) {
+    currentSketch = new p5(createTreeSketch(stageId));
+
+    // Update stage info
+    const stageNumber = stageId.split('_')[1];
+    let stageDesc = '';
+    switch(stageId) {
+      case 'Stage_1': stageDesc = 'Preliminary Investigation'; break;
+      case 'Stage_2': stageDesc = 'Baseline Tuning'; break;
+      case 'Stage_3': stageDesc = 'Research Agenda Execution'; break;
+      case 'Stage_4': stageDesc = 'Ablation Studies'; break;
+    }
+
+    document.getElementById('stage-info').innerHTML =
+      `<strong>Current Stage: ${stageNumber} - ${stageDesc}</strong>`;
+  }
+}
+
+// Handle tab selection
+function selectStage(stageId) {
+  if (!stageData[stageId] || !availableStages.includes(stageId)) {
+    return; // Don't allow selection of unavailable stages
+  }
+
+  // Update active tab styles
+  document.querySelectorAll('.tab').forEach(tab => {
+    tab.classList.remove('active');
+  });
+  document.querySelector(`.tab[data-stage="${stageId}"]`).classList.add('active');
+
+  // Start the new sketch
+  currentStage = stageId;
+  startSketch(stageId);
+}
+
+// Function to load the tree data for all stages
+async function loadAllStageData(baseTreeData) {
+  console.log("Loading stage data with base data:", baseTreeData);
+
+  // The base tree data is for the current stage
+  const currentStageId = baseTreeData.current_stage || 'Stage_1';
+
+  // Ensure base tree data is valid and has required properties
+  if (baseTreeData && baseTreeData.layout && baseTreeData.edges) {
+    stageData[currentStageId] = baseTreeData;
+    availableStages.push(currentStageId);
+    console.log(`Added current stage ${currentStageId} to available stages`);
+  } else {
+    console.warn(`Current stage ${currentStageId} data is invalid:`, baseTreeData);
+  }
+
+  // Use relative path to load other stage trees
+  const logDirPath = baseTreeData.log_dir_path || '.';
+  console.log("Log directory path:", logDirPath);
+
+  // Load data for each stage if available
+  const stageNames = ['Stage_1', 'Stage_2', 'Stage_3', 'Stage_4'];
+  const stageNames2actualNames = {
+    'Stage_1': 'stage_1_initial_implementation_1_preliminary',
+    'Stage_2': 'stage_2_baseline_tuning_1_first_attempt',
+    'Stage_3': 'stage_3_creative_research_1_first_attempt',
+    'Stage_4': 'stage_4_ablation_studies_1_first_attempt'
+    }
+
+  for (const stage of stageNames) {
+
+    if (baseTreeData.completed_stages && baseTreeData.completed_stages.includes(stage)) {
+      try {
+        console.log(`Attempting to load data for ${stage} from ${logDirPath}/${stageNames2actualNames[stage]}/tree_data.json`);
+        const response = await fetch(`${logDirPath}/${stageNames2actualNames[stage]}/tree_data.json`);
+
+        if (response.ok) {
+          const data = await response.json();
+
+          // Validate the loaded data
+          if (data && data.layout && data.edges) {
+            stageData[stage] = data;
+            availableStages.push(stage);
+            console.log(`Successfully loaded and validated data for ${stage}`);
+          } else {
+            console.warn(`Loaded data for ${stage} is invalid:`, data);
+          }
+        } else {
+          console.warn(`Failed to load data for ${stage} - HTTP status ${response.status}`);
+        }
+      } catch (error) {
+        console.error(`Error loading data for ${stage}:`, error);
+      }
+    } else {
+      console.log(`Skipping stage ${stage} - not in completed stages list:`, baseTreeData.completed_stages);
+    }
+  }
+
+  // Update tab visibility based on available stages
+  updateTabVisibility();
+
+  // Start with the first available stage
+  if (availableStages.length > 0) {
+    selectStage(availableStages[0]);
+  } else {
+    console.warn("No stages available to display");
+    // Display a message in the canvas area
+    document.getElementById('canvas-container').innerHTML =
+      '<div style="padding: 20px; color: #333; text-align: center;"><h3>No valid tree data available to display</h3></div>';
+  }
+}
+
+// Update tab visibility based on available stages
+function updateTabVisibility() {
+  const tabs = document.querySelectorAll('.tab');
+  tabs.forEach(tab => {
+    const stageId = tab.getAttribute('data-stage');
+    if (availableStages.includes(stageId)) {
+      tab.classList.remove('disabled');
+    } else {
+      tab.classList.add('disabled');
+    }
+  });
+}
+
+// Utility function to set the node info in the right panel
+const setNodeInfo = (code, plan, plot_code, plot_plan, metrics = null, exc_type = '', exc_info = '',
+    exc_stack = [], plots = [], plot_analyses = [], vlm_feedback_summary = '',
+    datasets_successfully_tested = [], exec_time_feedback = '', exec_time = '') => {
+  const codeElm = document.getElementById("code");
+  if (codeElm) {
+    if (code) {
+      codeElm.innerHTML = hljs.highlight(code, { language: "python" }).value;
+    } else {
+      codeElm.innerHTML = '<p>No code available</p>';
+    }
+  }
+
+  const planElm = document.getElementById("plan");
+  if (planElm) {
+    if (plan) {
+      planElm.innerHTML = hljs.highlight(plan, { language: "plaintext" }).value;
+    } else {
+      planElm.innerHTML = '<p>No plan available</p>';
+    }
+  }
+
+  const plot_codeElm = document.getElementById("plot_code");
+  if (plot_codeElm) {
+    if (plot_code) {
+      plot_codeElm.innerHTML = hljs.highlight(plot_code, { language: "python" }).value;
+    } else {
+      plot_codeElm.innerHTML = '<p>No plot code available</p>';
+    }
+  }
+
+  const plot_planElm = document.getElementById("plot_plan");
+  if (plot_planElm) {
+    if (plot_plan) {
+      plot_planElm.innerHTML = hljs.highlight(plot_plan, { language: "plaintext" }).value;
+    } else {
+      plot_planElm.innerHTML = '<p>No plot plan available</p>';
+    }
+  }
+
+  const metricsElm = document.getElementById("metrics");
+  if (metricsElm) {
+      let metricsContent = `<h3>Metrics:</h3>`;
+      if (metrics && metrics.metric_names) {
+          for (const metric of metrics.metric_names) {
+              metricsContent += `<div class="metric-group">`;
+              metricsContent += `<h4>${metric.metric_name}</h4>`;
+              metricsContent += `<p><strong>Description:</strong> ${metric.description || 'N/A'}</p>`;
+              metricsContent += `<p><strong>Optimization:</strong> ${metric.lower_is_better ? 'Minimize' : 'Maximize'}</p>`;
+
+              // Create table for dataset values
+              metricsContent += `<table class="metric-table">
+                  <tr>
+                      <th>Dataset</th>
+                      <th>Final Value</th>
+                      <th>Best Value</th>
+                  </tr>`;
+
+              for (const dataPoint of metric.data) {
+                  metricsContent += `<tr>
+                      <td>${dataPoint.dataset_name}</td>
+                      <td>${dataPoint.final_value?.toFixed(4) || 'N/A'}</td>
+                      <td>${dataPoint.best_value?.toFixed(4) || 'N/A'}</td>
+                  </tr>`;
+              }
+
+              metricsContent += `</table></div>`;
+          }
+      } else if (metrics === null) {
+          metricsContent += `<p>No metrics available</p>`;
+      }
+      metricsElm.innerHTML = metricsContent;
+  }
+
+  // Add plots display
+  const plotsElm = document.getElementById("plots");
+  if (plotsElm) {
+      if (plots && plots.length > 0) {
+          let plotsContent = '';
+          plots.forEach(plotPath => {
+              plotsContent += `
+                  <div class="plot-item">
+                      <img src="${plotPath}" alt="Experiment Plot" onerror="console.error('Failed to load plot:', this.src)"/>
+                  </div>`;
+          });
+          plotsElm.innerHTML = plotsContent;
+      } else {
+          plotsElm.innerHTML = '';
+      }
+  }
+
+  // Add error info display
+  const errorElm = document.getElementById("exc_info");
+  if (errorElm) {
+    if (exc_type) {
+      let errorContent = `<h3 style="color: #ff5555">Exception Information:</h3>
+                          <p><strong>Type:</strong> ${exc_type}</p>`;
+
+      if (exc_info) {
+        errorContent += `<p><strong>Details:</strong> <pre>${JSON.stringify(exc_info, null, 2)}</pre></p>`;
+      }
+
+      if (exc_stack) {
+        errorContent += `<p><strong>Stack Trace:</strong> <pre>${exc_stack.join('\n')}</pre></p>`;
+      }
+
+      errorElm.innerHTML = errorContent;
+    } else {
+      errorElm.innerHTML = "No exception info available";
+    }
+  }
+
+  const exec_timeElm = document.getElementById("exec_time");
+  if (exec_timeElm) {
+    let exec_timeContent = '<div id="exec_time"><h3>Execution Time (in seconds):</h3><p>' + exec_time + '</p></div>';
+    exec_timeElm.innerHTML = exec_timeContent;
+  }
+
+  const exec_time_feedbackElm = document.getElementById("exec_time_feedback");
+  if (exec_time_feedbackElm) {
+    let exec_time_feedbackContent = '<div id="exec_time_feedback_content">'
+    exec_time_feedbackContent += '<h3>Execution Time Feedback:</h3>'
+    exec_time_feedbackContent += '<p>' + exec_time_feedback + '</p>'
+    exec_time_feedbackContent += '</div>';
+    exec_time_feedbackElm.innerHTML = exec_time_feedbackContent;
+  }
+
+  const vlm_feedbackElm = document.getElementById("vlm_feedback");
+  if (vlm_feedbackElm) {
+      let vlm_feedbackContent = '';
+
+      if (plot_analyses && plot_analyses.length > 0) {
+          vlm_feedbackContent += `<h3>Plot Analysis:</h3>`;
+          plot_analyses.forEach(analysis => {
+              if (analysis && analysis.plot_path) {  // Add null check
+                  vlm_feedbackContent += `
+                      <div class="plot-analysis">
+                          <h4>Analysis for ${analysis.plot_path.split('/').pop()}</h4>
+                          <p>${analysis.analysis || 'No analysis available'}</p>
+                          <ul class="key-findings">
+                              ${(analysis.key_findings || []).map(finding => `<li>${finding}</li>`).join('')}
+                          </ul>
+                      </div>`;
+              } else {
+                  console.warn('Received invalid plot analysis:', analysis);
+                  vlm_feedbackContent += `
+                      <div class="plot-analysis">
+                          <p>Invalid plot analysis data received</p>
+                      </div>`;
+              }
+          });
+      }
+
+      // Add actionable insights if available
+      if (vlm_feedback_summary && typeof vlm_feedback_summary === 'string') {
+          vlm_feedbackContent += `
+              <div class="vlm_feedback">
+                  <h3>VLM Feedback Summary:</h3>
+                  <p>${vlm_feedback_summary}</p>
+              </div>`;
+      }
+
+      console.log("Datasets successfully tested:", datasets_successfully_tested);
+      if (datasets_successfully_tested && datasets_successfully_tested.length > 0) {
+          vlm_feedbackContent += `
+              <div id="datasets_successfully_tested">
+                  <h3>Datasets Successfully Tested:</h3>
+                  <p>${datasets_successfully_tested.join(', ')}</p>
+              </div>`;
+      }
+
+      if (!vlm_feedbackContent) {
+          vlm_feedbackContent = '<p>No insights available for this experiment.</p>';
+      }
+
+      vlm_feedbackElm.innerHTML = vlm_feedbackContent;
+  }
+
+  const datasets_successfully_testedElm = document.getElementById("datasets_successfully_tested");
+  if (datasets_successfully_testedElm) {
+      let datasets_successfully_testedContent = '';
+      if (datasets_successfully_tested && datasets_successfully_tested.length > 0) {
+          datasets_successfully_testedContent = `<h3>Datasets Successfully Tested:</h3><ul>`;
+          datasets_successfully_tested.forEach(dataset => {
+              datasets_successfully_testedContent += `<li>${dataset}</li>`;
+          });
+          datasets_successfully_testedContent += `</ul>`;
+      } else {
+          datasets_successfully_testedContent = '<p>No datasets tested yet</p>';
+      }
+      datasets_successfully_testedElm.innerHTML = datasets_successfully_testedContent;
+  }
+};
+
+// Initialize with the provided tree data
+const treeStructData = {"edges": [], "layout": [[0.0, 0.0], [0.5, 0.0], [1.0, 0.0]], "plan": ["To address the research hypothesis that adapters from the same base model\nexhibit correlated failures, I will implement a preliminary audit using\nsynthetic data. The core idea is to simulate two types of ensembles: one where\nmembers share a strong underlying bias (simulating same-base adapters) and\nanother where members are independent (simulating diverse architectures). We\nwill generate binary failure indicators for $N$ models over $M$ samples,\nintroducing controlled correlation via shared latent variables. The effective\nindependent size ($EIS$) will be calculated as $N^2 / \\sum_{i,j}\n\\text{corr}(F_i, F_j)$, where $F_i$ is the binary failure vector for model $i$.\nA lower $EIS$ relative to $N$ indicates higher redundancy. This simple\nsimulation allows us to verify the metric's behavior before applying it to real\nfine-tuned models. The code generates these synthetic scenarios, computes\npairwise correlations, derives the EIS, and visualizes the difference between\ncorrelated and independent ensembles.", "", ""], "code": ["import os\nimport numpy as np\nimport torch\nimport matplotlib.pyplot as plt\nfrom sklearn.metrics import confusion_matrix\n\n# Setup working directory\nworking_dir = os.path.join(os.getcwd(), \"working\")\nos.makedirs(working_dir, exist_ok=True)\n\ndevice = torch.device(\"cuda\" if torch.cuda.is_available() else \"cpu\")\nprint(f\"Using device: {device}\")\n\n\ndef compute_effective_independent_size(failures):\n    \"\"\"\n    Compute Effective Independent Size (EIS) from a matrix of binary failures.\n\n    Args:\n        failures: np.array of shape [num_samples, num_models], 1 if failed, 0 if correct.\n\n    Returns:\n        eis: float, effective independent size.\n        avg_pairwise_corr: float, average pairwise Pearson correlation.\n    \"\"\"\n    num_models = failures.shape[1]\n\n    # Compute correlation matrix\n    # corrcoef returns [N,N] matrix. NaNs might occur if a column has zero variance (always fail or always pass)\n    # To handle this robustly for synthetic data, we ensure some variance exists in generation.\n    try:\n        corr_matrix = np.corrcoef(failures.T)\n    except ValueError:\n        return 0.0, 0.0\n\n    # Replace NaN with 0 (no correlation information available for constant columns)\n    corr_matrix = np.nan_to_num(corr_matrix, nan=0.0)\n\n    # Sum of all elements in correlation matrix includes diagonal (which are 1s)\n    sum_corr = np.sum(corr_matrix)\n\n    # Formula: N^2 / sum_{i,j} rho_ij\n    # Note: Standard formula often uses off-diagonal only, but the prompt says sum_{i,j}.\n    # If i=j, rho_ii = 1. So sum includes N ones on diagonal.\n    eis = (num_models**2) / sum_corr\n\n    # Average pairwise correlation (off-diagonal)\n    mask = ~np.eye(num_models, dtype=bool)\n    avg_pairwise_corr = np.mean(corr_matrix[mask])\n\n    return eis, avg_pairwise_corr\n\n\ndef generate_synthetic_failures(\n    num_samples, num_models, correlation_strength, base_failure_rate=0.2\n):\n    \"\"\"\n    Generate binary failure vectors with specified inter-model correlation.\n\n    Args:\n        num_samples: int\n        num_models: int\n        correlation_strength: float in [0, 1]. 0 means independent, 1 means identical.\n        base_failure_rate: float\n\n    Returns:\n        failures: np.array [num_samples, num_models]\n    \"\"\"\n    # Shared latent factor causing correlated errors\n    shared_latent = np.random.normal(size=(num_samples, 1)) * correlation_strength\n\n    # Individual noise\n    individual_noise = np.random.normal(size=(num_samples, num_models)) * (\n        1 - correlation_strength\n    )\n\n    # Combined score per sample per model\n    scores = shared_latent + individual_noise\n\n    # Threshold to get binary failures based on base rate\n    threshold = np.quantile(scores, 1 - base_failure_rate)\n    failures = (scores > threshold).astype(int)\n\n    return failures\n\n\n# Experiment Parameters\nNUM_SAMPLES = 5000\nNUM_MODELS = 10\nBASE_FAILURE_RATE = 0.2\n\n# Scenarios to test\nscenarios = [\n    {\"name\": \"Independent Ensemble\", \"correlation_strength\": 0.0},\n    {\"name\": \"Weakly Correlated (Different Bases)\", \"correlation_strength\": 0.3},\n    {\"name\": \"Strongly Correlated (Same Base Adapters)\", \"correlation_strength\": 0.8},\n    {\"name\": \"Highly Redundant (Near Identical)\", \"correlation_strength\": 0.95},\n]\n\nexperiment_data = {}\n\nprint(\"Generating Synthetic Data and Computing Metrics...\")\nfor scenario in scenarios:\n    name = scenario[\"name\"]\n    strength = scenario[\"correlation_strength\"]\n\n    print(f\"\\nProcessing Scenario: {name}\")\n\n    # Generate failures\n    failures = generate_synthetic_failures(\n        NUM_SAMPLES, NUM_MODELS, strength, BASE_FAILURE_RATE\n    )\n\n    # Calculate metrics\n    eis, avg_corr = compute_effective_independent_size(failures)\n\n    # Store results\n    experiment_data[name] = {\n        \"failures\": failures,\n        \"eis\": eis,\n        \"avg_pairwise_corr\": avg_corr,\n        \"nominal_size\": NUM_MODELS,\n        \"reliability_score\": 1\n        - np.all(failures == 1, axis=1).mean(),  # Prob not all fail\n    }\n\n    print(f\"  Nominal Size: {NUM_MODELS}\")\n    print(f\"  Avg Pairwise Corr: {avg_corr:.4f}\")\n    print(f\"  Effective Independent Size (EIS): {eis:.4f}\")\n    print(f\"  Ratio EIS/Nominal: {eis/NUM_MODELS:.4f}\")\n    print(f\"  Prob All Fail: {np.all(failures == 1, axis=1).mean():.4f}\")\n\n# Visualization\nplt.figure(figsize=(12, 6))\n\n# Plot 1: EIS vs Correlation Strength\nstrengths = [s[\"correlation_strength\"] for s in scenarios]\neiss = [experiment_data[s[\"name\"]][\"eis\"] for s in scenarios]\nnames = [s[\"name\"] for s in scenarios]\n\nx_pos = np.arange(len(scenarios))\nbars = plt.bar(x_pos, eiss, color=[\"green\", \"yellow\", \"orange\", \"red\"])\nplt.xticks(x_pos, names, rotation=45, ha=\"right\")\nplt.ylabel(\"Effective Independent Size (EIS)\")\nplt.title(\n    f\"EIS Decreases as Inter-Model Failure Correlation Increases\\n(Nominal Ensemble Size = {NUM_MODELS})\"\n)\nplt.axhline(\n    y=NUM_MODELS,\n    color=\"blue\",\n    linestyle=\"--\",\n    label=f\"Max Possible (Nominal Size={NUM_MODELS})\",\n)\nplt.legend()\n\n# Add value labels on bars\nfor bar, val in zip(bars, eiss):\n    height = bar.get_height()\n    plt.text(\n        bar.get_x() + bar.get_width() / 2.0,\n        height,\n        f\"{val:.1f}\",\n        ha=\"center\",\n        va=\"bottom\",\n    )\n\nplt.tight_layout()\nplot_path = os.path.join(working_dir, \"synthetic_eis_analysis.png\")\nplt.savefig(plot_path)\nplt.close()\nprint(f\"\\nSaved plot to {plot_path}\")\n\n# Plot 2: Heatmap of Correlation Matrix for Strongly Correlated Case\nstrong_scenario_name = \"Strongly Correlated (Same Base Adapters)\"\nfailures_strong = experiment_data[strong_scenario_name][\"failures\"]\ncorr_matrix_strong = np.corrcoef(failures_strong.T)\n\nplt.figure(figsize=(10, 8))\nim = plt.imshow(corr_matrix_strong, cmap=\"coolwarm\", vmin=-1, vmax=1)\nplt.colorbar(im)\nplt.title(f\"Pairwise Failure Correlation Matrix ({strong_scenario_name})\")\nplt.xlabel(\"Model Index\")\nplt.ylabel(\"Model Index\")\nplt.xticks(np.arange(NUM_MODELS))\nplt.yticks(np.arange(NUM_MODELS))\nplt.tight_layout()\nheatmap_path = os.path.join(working_dir, \"correlation_heatmap_strong.png\")\nplt.savefig(heatmap_path)\nplt.close()\nprint(f\"Saved heatmap to {heatmap_path}\")\n\n# Save raw data\nnp.save(os.path.join(working_dir, \"experiment_data.npy\"), experiment_data)\nprint(\"\\nExperiment completed successfully.\")\n", "To address the research hypothesis that adapters derived from the same base model exhibit correlated failures, reducing their effective independent size (EIS), I propose a synthetic experiment using PyTorch to simulate ensemble behavior without heavy computational overhead. We will generate synthetic classification data with distinct \"hard\" and \"easy\" samples to mimic distribution shifts or rare slices. Instead of training actual LLM/Vision adapters which requires significant resources, we will train multiple small multi-layer perceptrons (MLPs) on subsets of this data or with slight variations in initialization/loss weighting to represent different \"adapter\" variants. One group will be trained on highly overlapping data distributions (simulating same-base adapters sharing biases), while another group will use diverse bootstrap sampling (simulating bagging/independent experts). For each ensemble configuration, we compute binary failure indicators for each member on a held-out test set containing both easy and hard cases. We then calculate the pairwise Pearson correlation matrix of these failure vectors. Finally, we derive the Effective Independent Size (EIS) using the formula $N^2 / \\sum_{i,j} \\text{corr}(F_i, F_j)$, where $N$ is the nominal ensemble size. The expectation is that the \"same-bias\" ensemble will yield an EIS close to 1 due to high positive correlation, whereas the \"diverse\" ensemble will have an EIS closer to $N$. This setup isolates the metric calculation logic and validates the hypothesis mechanism in a controlled environment before scaling to real foundation models.\n\n```python\nimport os\nimport numpy as np\nimport torch\nimport torch.nn as nn\nimport torch.optim as optim\nfrom torch.utils.data import DataLoader, TensorDataset\nimport matplotlib.pyplot as plt\n\n# Setup working directory\nworking_dir = os.path.join(os.getcwd(), 'working')\nos.makedirs(working_dir, exist_ok=True)\n\n# Device configuration\ndevice = torch.device('cuda' if torch.cuda.is_available() else 'cpu')\nprint(f'Using device: {device}')\n\n# Set seeds for reproducibility\ntorch.manual_seed(42)\nnp.random.seed(42)\n\ndef generate_synthetic_data(n_samples=5000, n_features=20, noise_level=0.1):\n    \"\"\"Generate synthetic classification data with some hard/easy split.\"\"\"\n    X = np.random.randn(n_samples, n_features).astype(np.float32)\n    # Create a complex decision boundary\n    w_true = np.random.randn(n_features).astype(np.float32)\n    logits = X @ w_true + np.random.randn(n_samples).astype(np.float32) * noise_level\n    y = (logits > 0).astype(np.float32)\n    \n    # Mark bottom 20% confidence scores as \"hard\" samples to simulate slice shift\n    conf_scores = np.abs(logits)\n    threshold = np.percentile(conf_scores, 20)\n    sample_difficulty = (conf_scores < threshold).astype(int) # 1 = hard, 0 = easy\n    \n    return torch.tensor(X), torch.tensor(y), torch.tensor(sample_difficulty)\n\nclass SmallMLP(nn.Module):\n    def __init__(self, input_dim=20, hidden_dim=64, output_dim=1):\n        super(SmallMLP, self).__init__()\n        self.network = nn.Sequential(\n            nn.Linear(input_dim, hidden_dim),\n            nn.ReLU(),\n            nn.Linear(hidden_dim, hidden_dim // 2),\n            nn.ReLU(),\n            nn.Linear(hidden_dim // 2, output_dim),\n            nn.Sigmoid() # Output probability for binary class\n        )\n        \n    def forward(self, x):\n        return self.network(x).squeeze(-1)\n\ndef train_model(model, loader, epochs=10, lr=0.01, weight_decay=0.0):\n    \"\"\"Train a simple classifier.\"\"\"\n    optimizer = optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)\n    criterion = nn.BCELoss()\n    model.train()\n    \n    for epoch in range(epochs):\n        total_loss = 0\n        for inputs, labels in loader:\n            inputs, labels = inputs.to(device), labels.to(device)\n            \n            optimizer.zero_grad()\n            outputs = model(inputs)\n            loss = criterion(outputs, labels)\n            loss.backward()\n            optimizer.step()\n            total_loss += loss.item()\n            \n        avg_loss = total_loss / len(loader)\n        # Print validation loss occasionally\n        if (epoch + 1) % 5 == 0:\n            print(f'Epoch {epoch+1}: validation_loss = {avg_loss:.4f}')\n            \n    return model\n\ndef get_binary_failures(model, X_test, Y_test):\n    \"\"\"Get binary failure indicator vector (1 if wrong, 0 if correct).\"\"\"\n    model.eval()\n    with torch.no_grad():\n        probs = model(X_test.to(device))\n        preds = (probs > 0.5).float()\n        errors = (preds != Y_test.to(device)).float().cpu().numpy()\n    return errors\n\ndef calculate_eis(failure_matrix):\n    \"\"\"\n    Calculate Effective Independent Size (EIS).\n    failure_matrix: Shape (n_models, n_samples). Binary 0/1 indicating error.\n    Formula: N^2 / sum_{i,j} corr(F_i, F_j)\n    \"\"\"\n    n_models = failure_matrix.shape[0]\n    \n    # Compute correlation matrix between model failures across samples\n    # Use np.corrcoef which returns NxN matrix\n    # Handle case where a model never fails or always fails (std=0) by adding epsilon\n    eps = 1e-8\n    centered = failure_matrix - np.mean(failure_matrix, axis=1, keepdims=True)\n    std_devs = np.std(failure_matrix, axis=1, ddof=1)\n    \n    # Normalize\n    normalized = centered / (std_devs[:, None] + eps)\n    \n    # Correlation matrix\n    corr_matrix = normalized @ normalized.T / (failure_matrix.shape[1] - 1)\n    \n    # Sum of all correlations\n    sum_corr = np.sum(corr_matrix)\n    \n    eis = (n_models ** 2) / sum_corr\n    return eis, corr_matrix, sum_corr\n\n# --- Experiment Configuration ---\nnum_models_same_bias = 5\nnum_models_diverse = 5\nn_total_samples = 5000\nbatch_size = 64\nepochs_train = 10\n\n# Generate Data\nX_all, Y_all, Difficulty_flags = generate_synthetic_data(n_total_samples)\ntest_split_idx = int(0.8 * n_total_samples)\nX_train, Y_train = X_all[:test_split_idx], Y_all[:test_split_idx]\nX_test, Y_test, Diff_test = X_all[test_split_idx:], Y_all[test_split_idx:], Difficulty_flags[test_split_idx:]\n\n# Split Train into Subset A (for Same Bias Group) and Full Set (for Diverse Group via Bootstrapping)\n# Simulate \"Same Base Adapter\" bias: All models see very similar data distributions \n# by splitting the main dataset into two halves and assigning one half exclusively to this group? \n# Better simulation: Assign them to a specific subset of features or just rely on identical init/data overlap.\n# Let's create a specific \"Biased Subgroup\" of training data that shares spurious features.\n# For simplicity in synthetic baseline:\n# Group 1 (Correlated Failures): Trained on random subsample of TRAINING DATA WITHOUT replacement (high overlap if seed fixed?)\n# Actually, to force correlation, let's make them train on THE SAME FIXED SUBSET OF DATA but with different random inits.\n# To force decorrelation, train on DIFFERENT BOOTSTRAP SAMPLES.\n\nindices_base = np.arange(len(X_train))\n\n# Storage for results\nexperiment_data = {\n    'ensemble_type_same_bias': {'eis': [], 'correlations_mean': []},\n    'ensemble_type_diverse': {'eis': [], 'correlations_mean': []}\n}\n\nresults_cache = {}\n\n# Helper to run one ensemble config\ndef run_ensemble_experiment(models_configs, label):\n    print(f\"\\nRunning Ensemble: {label}\")\n    failure_vectors = []\n    \n    for i, (seed_offset, data_indices) in enumerate(models_configs):\n        torch.manual_seed(seed_offset)\n        np.random.seed(seed_offset)\n        \n        # Prepare Data Loader\n        X_sub = X_train[data_indices]\n        Y_sub = Y_train[data_indices]\n        \n        dataset = TensorDataset(X_sub, Y_sub)\n        loader = DataLoader(dataset, batch_size=batch_size, shuffle=True)\n        \n        model = SmallMLP().to(device)\n        model = train_model(model, loader, epochs=epochs_train)\n        \n        errs = get_binary_failures(model, X_test, Y_test)\n        failure_vectors.append(errs)\n        \n    failure_matrix = np.stack(failure_vectors) # Shape: (N_models, N_test_samples)\n    \n    eis, corr_mat, sum_corr = calculate_eis(failure_matrix)\n    mean_off_diag_corr = (np.sum(corr_mat) - np.trace(corr_mat)) / (len(failure_vectors)*(len(failure_vectors)-1)/2) if len(failure_vectors)>1 else 0\n    \n    print(f\"N Models: {len(failure_vectors)}\")\n    print(f\"Sum Corr: {sum_corr:.2f}\")\n    print(f\"EIS: {eis:.2f}\")\n   ", "We will create a synthetic data generation pipeline to simulate an ensemble of classifiers with varying degrees of failure correlation, avoiding external dependencies like scikit-learn where possible by using NumPy for statistical calculations. The core idea is to generate binary failure indicators for $N$ models across $M$ samples, where failures are correlated based on a shared latent variable representing \"systemic bias\" versus independent noise. We define two scenarios: a \"high-correlation\" scenario mimicking adapters from the same base model, and a \"low-correlation\" scenario mimicking truly independent ensembles. For each scenario, we compute the pairwise Pearson correlation matrix of the failure vectors (one vector per sample or per model depending on definition; here we treat rows as samples and columns as models). The Effective Independent Size (EIS) is calculated as $N^2 / \\sum_{i,j} |\\rho_{ij}|$, handling diagonal terms ($\\rho_{ii}=1$) appropriately to reflect the sum of absolute correlations including self-correlations, or more commonly in literature, focusing on off-diagonal interactions if normalizing differently; however, the prompt specifies $N^2 / \\sum_{i,j} \\text{corr}(F_i, F_j)$, so we will implement this exact formula ensuring numerical stability by adding a small epsilon to the denominator if it approaches zero, though for positive correlations it won't be zero. We will visualize the correlation heatmaps for both scenarios to qualitatively verify that the high-correlation case shows strong off-diagonal structures while the low-correlation case does not. Finally, we report the EIS for both cases to demonstrate that nominal diversity (same N) yields different effective reliability due to correlation structure. This approach isolates the metric calculation logic from complex deep learning training pipelines, providing a robust baseline for the audit tool itself.\n\n```python\nimport os\nimport numpy as np\nimport matplotlib.pyplot as plt\nimport torch\n\n# Setup working directory\nworking_dir = os.path.join(os.getcwd(), 'working')\nos.makedirs(working_dir, exist_ok=True)\n\ndevice = torch.device('cuda' if torch.cuda.is_available() else 'cpu')\nprint(f'Using device: {device}')\n\ndef generate_synthetic_failures(num_models, num_samples, correlation_strength):\n    \"\"\"\n    Generates binary failure indicators for an ensemble.\n    \n    Args:\n        num_models (int): Number of models in the ensemble (N).\n        num_samples (int): Number of evaluation samples (M).\n        correlation_strength (float): 0.0 for independent, 1.0 for perfectly correlated.\n        \n    Returns:\n        np.array: Shape (num_samples, num_models), values 0 or 1 indicating success/failure.\n                  Here 1 represents failure (error).\n    \"\"\"\n    # Base rate of failure for each model individually\n    base_failure_rates = np.random.uniform(0.1, 0.4, size=num_models)\n    \n    # Shared latent factor driving correlated failures\n    # If correlation_strength is high, this factor dominates individual noise\n    shared_latent = np.random.randn(num_samples, 1)\n    \n    # Individual noise component\n    individual_noise = np.random.randn(num_samples, num_models)\n    \n    # Mix shared and individual components\n    # High correlation means failures happen together when shared_latent is extreme\n    # Low correlation means failures are mostly driven by individual_noise\n    \n    # Construct logit scores for failure\n    # Scale shared latent by correlation strength to control dependency\n    scale_shared = correlation_strength * 5.0 \n    scale_individual = (1.0 - correlation_strength) * 2.0 + 0.5\n    \n    logits = (scale_shared * shared_latent) + (scale_individual * individual_noise)\n    \n    # Adjust intercepts to match desired base failure rates roughly\n    # Sigmoid(logits) > threshold determines failure\n    # To simplify, we normalize probabilities and then sample Bernoulli\n    \n    probs = 1 / (1 + np.exp(-logits))\n    \n    # Re-calibrate probabilities to ensure mean failure rate aligns somewhat with base_rate\n    # This is a heuristic adjustment\n    target_mean_probs = base_failure_rates.mean()\n    current_mean_prob = probs.mean()\n    if current_mean_prob > 0:\n        probs = probs * (target_mean_probs / current_mean_prob)\n        probs = np.clip(probs, 0, 1)\n        \n    # Sample binary failures: 1 if fails, 0 if correct\n    # Note: In safety contexts, failure might be rare. Here we just need variation.\n    rand_vals = np.random.rand(num_samples, num_models)\n    failures = (rand_vals < probs).astype(int)\n    \n    return failures\n\ndef calculate_eis(failures):\n    \"\"\"\n    Calculate Effective Independent Size (EIS).\n    Formula: N^2 / sum_{i,j} corr(F_i, F_j)\n    \n    Args:\n        failures (np.array): Shape (num_samples, num_models). Binary failure indicators.\n        \n    Returns:\n        float: The EIS value.\n    \"\"\"\n    num_samples, num_models = failures.shape\n    \n    # Compute Pearson correlation matrix\n    # np.corrcoef expects variables in rows, observations in columns? \n    # Actually, rowvar=False means each column is a variable, each row an observation.\n    # Our shape is (samples, models). So columns are models (variables).\n    # Thus rowvar=False is correct.\n    \n    corr_matrix = np.corrcoef(failures.T, rowvar=False)\n    \n    # Handle NaNs if any model has constant outputs (all 0 or all 1)\n    corr_matrix = np.nan_to_num(corr_matrix, nan=0.0)\n    \n    # Sum of all correlations (including diagonal ones which are 1.0)\n    total_corr_sum = np.sum(np.abs(corr_matrix)) \n    \n    # EIS Definition from prompt: N^2 / sum_{i,j} corr(F_i, F_j)\n    # Using absolute values to prevent cancellation if negative correlations exist,\n    # although failure modes usually positively correlate in biased systems.\n    # The prompt says \"corr\", implying signed, but for \"effective independence\" magnitude matters.\n    # Let's stick strictly to the prompt's likely intent: measure redundancy.\n    # If correlations are negative, they increase independence. \n    # However, standard interpretation of such metrics often uses absolute values or squared correlations.\n    # Given the hypothesis \"strongly positively correlated\", let's assume positive.\n    # To be safe against division by zero or negative sums canceling out:\n    \n    sum_signed_corr = np.sum(corr_matrix)\n    \n    # Guard against near-zero denominators\n    if abs(sum_signed_corr) < 1e-6:\n        return float('inf')\n        \n    eis = (num_models ** 2) / sum_signed_corr\n    \n    return eis, corr_matrix\n\ndef plot_correlation_heatmap(corr_matrix, title, save_path):\n    plt.figure(figsize=(8, 6))\n    plt.imshow(corr_matrix, cmap='coolwarm', vmin=-1, vmax=1)\n    plt.colorbar(label='Pearson Correlation')\n    plt.title(title)\n    plt.xlabel('Model Index')\n    plt.ylabel('Model Index')\n    plt.tight_layout()\n    plt.savefig(save_path)\n    plt.close()\n\n# --- Experiment Configuration ---\nNUM_MODELS = 20      # Nominal Ensemble Size N\nNUM_SAMPLES = 1000   # Evaluation Set Size M\nSEED = 42\n\nnp.random.seed(SEED)\n\n# Scenario 1: Same-base adapters (High Correlation)\n# Expect low EIS relative to N\ncorrelation_high = 0.9\nfailures_high = generate_synthetic_failures(NUM_MODELS, NUM_SAMPLES, correlation_high)\neis_high, corr_mat_high = calculate_eis(failures_high)\n\n# Scenario 2: Different-base/Independent (Low Correlation)\n# Expect EIS close to N\ncorrelation_low = 0.1\nfailures_low = generate_synthetic_failures(NUM_MODELS, NUM_SAMPLES, correlation_low)\neis_low, corr_mat_low = calculate_eis(failures_low)\n\n# Output Results\nprint(f\"Nominal Ensemble Size (N): {NUM_MODELS}\")\nprint(\"-\" * 30)\nprint(\"Scenario: High Correlation (Same-Base Adapters)\")\nprint(f\"Mean Off-Diagonal Corr: {(np.sum(corr_mat_high) - np.trace(corr_mat_high))/(NUM_MODELS*(NUM_MODELS-1)):.4f}\")\nprint(f\"Effective Independent Size (EIS): {eis_high:.2f}\")\nprint(\"-\" * 30)\nprint(\"Scenario: Low Correlation (Diverse/Independent)\")\nprint(f\"Mean Off-Diagonal Corr: {(np.sum(corr_mat_low) - np.trace(corr_mat_low))/(NUM_MODELS*(NUM_MODELS-1)):.4f}\")\nprint(f\"Effective Independent Size (EIS): {eis_low:.2f}\")\n\n# Visualization\nplot_correlation_heatmap(\n    corr_mat_high, \n    f\"High-Correlation Failures (EIS={eis_high:.2f})\", \n    os.path.join(working_dir, 'heatmap_high_corr.png')\n)\n\nplot_correlation_heatmap(\n    corr_mat_low, \n    f\"Low-Correlation Failures (EIS={eis_low:.2f})\", \n    os.path.join(working_dir, 'heatmap_low_corr.png')\n)"], "term_out": ["['Traceback (most recent call last):\\n  File \"E:\\\\xidian-ai-security-class-\nproject-new-main\\\\projects\\\\project-02-ai-\nscientist-v2\\\\ai_scientist\\\\treesearch\\\\interpreter.py\", line 148, in\n_run_session\\n    exec(compile(code, self.agent_file_name, \"exec\"),\nglobal_scope)\\n  File \"runfile.py\", line 5, in <module>\\n    from\nsklearn.metrics import confusion_matrix\\nModuleNotFoundError: No module named\n\\'sklearn\\'\\n', 'Execution time: a moment seconds (time limit is an hour).']", "['Traceback (most recent call last):\\n  File \"E:\\\\xidian-ai-security-class-\nproject-new-main\\\\projects\\\\project-02-ai-\nscientist-v2\\\\ai_scientist\\\\treesearch\\\\interpreter.py\", line 148, in\n_run_session\\n    exec(compile(code, self.agent_file_name, \"exec\"),\nglobal_scope)\\n         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\\n  File\n\"runfile.py\", line 1\\n    containing both easy and hard cases. We then calculate\nthe pairwise Pearson correlation matrix of these failure vectors. Finally, we\nderive the Effective Independent Size (EIS) using the formula $N^2 / \\\\sum_{i,j}\n\\\\text{corr}(F_i, F_j)$, where $N$ is the nominal ensemble size. The expectation\nis that the \"same-bias\" ensemble will yield an EIS close to 1 due to high\npositive correlation, whereas the \"diverse\" ensemble will have an EIS closer to\n$N$. This setup isolates the metric calculation logic and validates the\nhypothesis mechanism in a controlled environment before scaling to real\nfoundation models.\\n      ^^^^^^^\\nSyntaxError: invalid syntax\\n', 'Execution\ntime: a moment seconds (time limit is an hour).']", "['Traceback (most recent call last):\\n  File \"E:\\\\xidian-ai-security-class-\nproject-new-main\\\\projects\\\\project-02-ai-\nscientist-v2\\\\ai_scientist\\\\treesearch\\\\interpreter.py\", line 148, in\n_run_session\\n    exec(compile(code, self.agent_file_name, \"exec\"),\nglobal_scope)\\n         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\\n  File\n\"runfile.py\", line 1\\n    olute correlations including self-correlations, or\nmore commonly in literature, focusing on off-diagonal interactions if\nnormalizing differently; however, the prompt specifies $N^2 / \\\\sum_{i,j}\n\\\\text{corr}(F_i, F_j)$, so we will implement this exact formula ensuring\nnumerical stability by adding a small epsilon to the denominator if it\napproaches zero, though for positive correlations it won\\'t be zero. We will\nvisualize the correlation heatmaps for both scenarios to qualitatively verify\nthat the high-correlation case shows strong off-diagonal structures while the\nlow-correlation case does not. Finally, we report the EIS for both cases to\ndemonstrate that nominal diversity (same N) yields different effective\nreliability due to correlation structure. This approach isolates the metric\ncalculation logic from complex deep learning training pipelines, providing a\nrobust baseline for the audit tool itself.\\n       ^^^^\\nSyntaxError: invalid\nsyntax\\n', 'Execution time: a moment seconds (time limit is an hour).']"], "analysis": ["The execution failed with a `ModuleNotFoundError` because the script attempts to\nimport `sklearn.metrics`, but the `scikit-learn` package is not installed in the\nenvironment.   However, looking at the rest of the code, `confusion_matrix` is\nimported but never used. The logic relies entirely on NumPy and Matplotlib.\n**Fix:** Remove the unused import line: ```python from sklearn.metrics import\nconfusion_matrix ``` This will allow the script to run using only standard\nlibraries (numpy, torch, matplotlib) which appear to be available or less likely\nto cause this specific missing dependency error if the environment is minimal.\nAlternatively, one could install scikit-learn, but removing dead code is\npreferred for reproducibility.", "The execution failed with a SyntaxError because the file `runfile.py` appears to\ncontain plain text from the research proposal description instead of valid\nPython code. The error message indicates that line 1 starts with English\nsentences (\"containing both easy and hard cases...\"), which suggests the\nprevious step incorrectly wrote the narrative explanation into the script file\nrather than the actual implementation code provided in the prompt. To fix this,\nensure that only the Python code block is saved to `runfile.py`. Additionally,\nthe provided code snippet seems truncated at the end (missing the final loop\nexecution and plotting logic); please complete the implementation by iterating\nover the defined configurations (`same_bias` vs `diverse`) using bootstrapping\nfor the diverse group and fixed subsets for the biased group, then aggregating\nand visualizing the EIS results.", "The execution failed with a SyntaxError because the script begins with a large\nblock of unquoted text (the implementation plan description) instead of valid\nPython code. The interpreter tried to parse this natural language text as\nPython, resulting in `SyntaxError: invalid syntax` at line 1. To fix this,\nremove the descriptive text preceding the `import` statements so that the file\nstarts directly with valid Python code (e.g., `import os`)."], "exc_type": ["ModuleNotFoundError", "SyntaxError", "SyntaxError"], "exc_info": [{"args": ["No module named 'sklearn'"], "name": "sklearn", "msg": "No module named 'sklearn'"}, {"args": ["invalid syntax", "('runfile.py', 1, 4, ' containing both easy and hard cases. We then calculate the pairwise Pearson correlation matrix of these failure vectors. Finally, we derive the Effective Independent Size (EIS) using the formula $N^2 / \\\\sum_{i,j} \\\\text{corr}(F_i, F_j)$, where $N$ is the nominal ensemble size. The expectation is that the \"same-bias\" ensemble will yield an EIS close to 1 due to high positive correlation, whereas the \"diverse\" ensemble will have an EIS closer to $N$. This setup isolates the metric calculation logic and validates the hypothesis mechanism in a controlled environment before scaling to real foundation models.\\n', 1, 11)"], "msg": "invalid syntax"}, {"args": ["invalid syntax", "('runfile.py', 1, 4, \"olute correlations including self-correlations, or more commonly in literature, focusing on off-diagonal interactions if normalizing differently; however, the prompt specifies $N^2 / \\\\sum_{i,j} \\\\text{corr}(F_i, F_j)$, so we will implement this exact formula ensuring numerical stability by adding a small epsilon to the denominator if it approaches zero, though for positive correlations it won't be zero. We will visualize the correlation heatmaps for both scenarios to qualitatively verify that the high-correlation case shows strong off-diagonal structures while the low-correlation case does not. Finally, we report the EIS for both cases to demonstrate that nominal diversity (same N) yields different effective reliability due to correlation structure. This approach isolates the metric calculation logic from complex deep learning training pipelines, providing a robust baseline for the audit tool itself.\\n\", 1, 8)"], "msg": "invalid syntax"}], "exc_stack": [[["E:\\xidian-ai-security-class-project-new-main\\projects\\project-02-ai-scientist-v2\\ai_scientist\\treesearch\\interpreter.py", 148, "_run_session", "exec(compile(code, self.agent_file_name, \"exec\"), global_scope)"], ["runfile.py", 5, "<module>", "from sklearn.metrics import confusion_matrix"]], [["E:\\xidian-ai-security-class-project-new-main\\projects\\project-02-ai-scientist-v2\\ai_scientist\\treesearch\\interpreter.py", 148, "_run_session", "exec(compile(code, self.agent_file_name, \"exec\"), global_scope)"]], [["E:\\xidian-ai-security-class-project-new-main\\projects\\project-02-ai-scientist-v2\\ai_scientist\\treesearch\\interpreter.py", 148, "_run_session", "exec(compile(code, self.agent_file_name, \"exec\"), global_scope)"]]], "exp_name": "0-run", "metrics": [{"metric_names": [{"metric_name": "value", "lower_is_better": true, "description": "", "data": [{"dataset_name": "default", "final_value": null, "best_value": null}]}]}, {"metric_names": [{"metric_name": "value", "lower_is_better": true, "description": "", "data": [{"dataset_name": "default", "final_value": null, "best_value": null}]}]}, {"metric_names": [{"metric_name": "value", "lower_is_better": true, "description": "", "data": [{"dataset_name": "default", "final_value": null, "best_value": null}]}]}], "is_best_node": [false, false, false], "plots": [[], [], []], "plot_paths": [[], [], []], "plot_analyses": [[], [], []], "vlm_feedback_summary": ["[]", "[]", "[]"], "exec_time": [0.012878894805908203, 0.020264387130737305, 0.012119293212890625], "exec_time_feedback": ["", "", ""], "datasets_successfully_tested": [[], [], []], "plot_code": [null, null, null], "plot_plan": [null, null, null], "ablation_name": [null, null, null], "hyperparam_name": [null, null, null], "is_seed_node": [false, false, false], "is_seed_agg_node": [false, false, false], "parse_metrics_plan": ["", "", ""], "parse_metrics_code": ["", "", ""], "parse_term_out": ["", "", ""], "parse_exc_type": [null, null, null], "parse_exc_info": [null, null, null], "parse_exc_stack": [null, null, null], "completed_stages": ["Stage_1"]};
+
+// Add log directory path and stage info to the tree data
+treeStructData.log_dir_path = window.location.pathname.split('/').slice(0, -1).join('/');
+treeStructData.current_stage = window.location.pathname.includes('stage_')
+  ? window.location.pathname.split('stage_')[1].split('/')[0]
+  : 'Stage_1';
+
+// Initialize background color
+window.bgColCurrent = bgCol;
+
+// Function to set background color that can be called from the console
+function setBackgroundColor(color) {
+  // Update the global color
+  updateBackgroundColor(color);
+
+  // Refresh the current sketch to apply the new background color
+  if (currentStage) {
+    startSketch(currentStage);
+  }
+}
+
+// Load all stage data and initialize the visualization
+loadAllStageData(treeStructData);
+
+    </script>
+    <title>AI Scientist-v2 Visualization</title>
+    <style>
+      body,
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+      body {
+        background-color: #ffffff;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      }
+      #canvas-container {
+        position: absolute;
+        left: 0;
+        top: 0;
+        width: 40vw;
+        height: 100vh;
+        background-color: inherit;
+        padding-top: 40px;
+      }
+      canvas {
+        float: left;
+        height: 100vh;
+        width: 100vw;
+      }
+      #text-container {
+        float: right;
+        height: 100vh;
+        width: 50vw;
+        background-color: #282c34;
+        overflow: auto;
+      }
+      #plan {
+        /* border-left: 2px solid #282c34; */
+        background-color: #282c34;
+        color: #f2f0e7;
+        min-height: 5rem;
+        padding: 1em 0 1em 1em;
+      }
+      #plot_plan {
+        background-color: #282c34;
+        color: #f2f0e7;
+        min-height: 5rem;
+        padding: 1em 0 1em 1em;
+        white-space: pre-wrap;
+      }
+      #exec_time_feedback {
+        margin-top: 20px;
+        padding: 10px;
+        background-color: #282c34;
+        border-left: 3px solid #ff5555;
+        color: #f2f0e7;
+      }
+      #exec_time {
+        margin-top: 20px;
+        padding: 10px;
+        background-color: #282c34;
+        border-left: 3px solid #ff5555;
+        color: #f2f0e7;
+      }
+      #exc_info {
+        margin-top: 20px;
+        padding: 10px;
+        background-color: #2c1f1f;
+        border-left: 3px solid #ff5555;
+        color: #f2f0e7;
+      }
+      #metrics {
+        margin-top: 20px;
+        padding: 10px;
+        background-color: #282c34;
+        color: #f2f0e7;
+      }
+      #vlm_feedback {
+        margin-top: 20px;
+        padding: 10px;
+        background-color: #1f2c2f;
+        color: #f2f0e7;
+        border-left: 3px solid #55ff55;
+      }
+      #vlm_feedback p {
+        margin: 0.5em 0;
+        white-space: pre-wrap;
+      }
+      .datasets_successfully_tested {
+        margin-top: 20px;
+        padding: 10px;
+        background-color: #282c34;
+        color: #f2f0e7;
+        border-left: 3px solid #55ff55;
+      }
+      .plots-container {
+        float: right;
+        width: 50vw;
+        padding: 1rem;
+        background-color: #282c34;
+        margin-top: 1rem;
+      }
+
+      .plot-item {
+        flex: 1 1 300px;
+        max-width: 100%;
+        margin-bottom: 1rem;
+        white-space: pre-wrap;
+      }
+
+      .plot-item img {
+        width: 100%;
+        height: auto;
+        border-radius: 4px;
+        box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        display: block;
+      }
+
+      .metric-group {
+        margin-bottom: 20px;
+        padding: 10px;
+        border: 1px solid #ddd;
+        border-radius: 4px;
+      }
+
+      .metric-table {
+        width: 100%;
+        border-collapse: collapse;
+        margin-top: 10px;
+      }
+
+      .metric-table th,
+      .metric-table td {
+        padding: 8px;
+        text-align: left;
+        border: 1px solid #ddd;
+      }
+
+      .metric-table th {
+        background-color: #363b44;
+      }
+
+      /* Styles for tabs */
+      .tabs-container {
+        position: fixed;
+        top: 0;
+        left: 0;
+        width: 49vw;
+        background-color: #000000;
+        z-index: 10;
+        display: flex;
+        padding: 0;
+      }
+
+      .tab {
+        cursor: pointer;
+        padding: 10px 15px;
+        background-color: #333;
+        color: #f2f0e7;
+        border: none;
+        outline: none;
+        transition: background-color 0.3s;
+        flex: 1;
+        text-align: center;
+      }
+
+      .tab:hover {
+        background-color: #444;
+      }
+
+      .tab.active {
+        background-color: #4c76af;
+        font-weight: bold;
+      }
+
+      .tab.disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
+        background-color: #282c34;
+      }
+
+      .tab-content {
+        display: none;
+        padding-top: 40px; /* Space for tabs */
+      }
+
+      .tab-content.active {
+        display: block;
+      }
+
+      .stage-info {
+        padding: 10px;
+        background-color: #282c34;
+        color: #f2f0e7;
+        margin-bottom: 10px;
+        font-size: 0.9em;
+      }
+
+      .stage-status {
+        display: inline-block;
+        padding: 3px 6px;
+        border-radius: 3px;
+        margin-left: 8px;
+        font-size: 0.8em;
+      }
+
+      .stage-status.completed {
+        background-color: #4caf50;
+      }
+
+      .stage-status.in-progress {
+        background-color: #2196f3;
+      }
+
+      .stage-status.not-started {
+        background-color: #9e9e9e;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="tabs-container" id="stage-tabs">
+      <button class="tab" data-stage="Stage_1" onclick="selectStage('Stage_1')">Stage 1</button>
+      <button class="tab" data-stage="Stage_2" onclick="selectStage('Stage_2')">Stage 2</button>
+      <button class="tab" data-stage="Stage_3" onclick="selectStage('Stage_3')">Stage 3</button>
+      <button class="tab" data-stage="Stage_4" onclick="selectStage('Stage_4')">Stage 4</button>
+    </div>
+
+    <div id="canvas-container"></div>
+
+    <pre id="text-container">
+        <div id="stage-info" class="stage-info"></div>
+        <div id="plan"></div>
+        <hr>
+        <div id="exc_info"></div>
+        <hr>
+        <div id="exec_time"></div>
+        <hr>
+        <div id="exec_time_feedback"></div>
+        <hr>
+        <div id="metrics"></div>
+        <hr>
+        <div id="plot_plan"></div>
+        <hr>
+        <div class="plots-container" id="plots"></div>
+        <hr>
+        <div id="vlm_feedback"></div>
+        <hr>
+        <div id="datasets_successfully_tested"></div>
+        <hr>
+        <code id="code" class="language-python"></code>
+        <hr>
+        <code id="plot_code" class="language-python"></code>
+    </pre>
+  </body>
+</html>
