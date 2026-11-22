@@ -1,0 +1,12 @@
+# Lightweight independent review environment; excludes the experiment/GPU stack.
+openai
+anthropic
+backoff
+python-dotenv
+numpy
+pypdf
+pymupdf
+pymupdf4llm
+tiktoken
+tzdata
+rich
